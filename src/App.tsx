@@ -272,15 +272,17 @@ export default function App() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Check for duplicate CPF or RENACH
+    // Check for duplicate CPF or RENACH for the same exam type
     const duplicate = appointments.find(app => 
-      (app.cpf === formData.cpf || app.renach === formData.renach) && app.id !== editingId
+      (app.cpf === formData.cpf || app.renach === formData.renach) && 
+      app.examType === formData.examType && 
+      app.id !== editingId
     );
 
     if (duplicate) {
       const field = duplicate.cpf === formData.cpf ? 'CPF' : 'RENACH';
       setNotification({
-        message: `Este ${field} já está cadastrado para ${duplicate.fullName}.`,
+        message: `Este ${field} já possui um agendamento de ${formData.examType} para ${duplicate.fullName}.`,
         type: 'error'
       });
       return;
@@ -381,8 +383,9 @@ export default function App() {
     setIsFormOpen(true);
   };
 
-  const deleteAppointment = async (id: string) => {
-    if (confirm('Tem certeza que deseja excluir este agendamento?')) {
+  const deleteAppointment = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (window.confirm('Tem certeza que deseja excluir este agendamento?')) {
       try {
         if (supabase) {
           const { error } = await supabase
@@ -504,6 +507,8 @@ export default function App() {
         };
 
     try {
+      const oldTicket = editingTicketId ? tickets.find(t => t.id === editingTicketId) : null;
+      
       if (supabase) {
         const { error } = await supabase
           .from('tickets')
@@ -511,32 +516,43 @@ export default function App() {
         if (error) throw error;
       }
 
+      let updatedTickets: Ticket[];
       if (editingTicketId) {
-        setTickets(prev => prev.map(t => t.id === editingTicketId ? ticketToSave : t));
+        updatedTickets = tickets.map(t => t.id === editingTicketId ? ticketToSave : t);
+        setTickets(updatedTickets);
         setNotification({ message: 'Chamado atualizado com sucesso!', type: 'success' });
       } else {
-        setTickets(prev => [ticketToSave, ...prev]);
+        updatedTickets = [ticketToSave, ...tickets];
+        setTickets(updatedTickets);
         setNotification({ message: 'Chamado aberto com sucesso!', type: 'success' });
-        
-        // If linked to an appointment, update its updatedAt and hasSgaCrtCall
-        if (ticketToSave.appointmentId) {
-          const appToUpdate = appointments.find(a => a.id === ticketToSave.appointmentId);
-          if (appToUpdate) {
-            const now = new Date().toISOString();
-            const updatedApp = { 
-              ...appToUpdate, 
-              hasSgaCrtCall: true,
-              updatedAt: now 
-            };
-            
-            if (supabase) {
-              await supabase.from('appointments').upsert(updatedApp);
-            }
-            
-            setAppointments(prev => [updatedApp, ...prev.filter(a => a.id !== updatedApp.id)]);
+      }
+
+      // Update Appointment flags
+      const now = new Date().toISOString();
+      
+      // 1. Update NEW linked appointment
+      if (ticketToSave.appointmentId) {
+        const appToUpdate = appointments.find(a => a.id === ticketToSave.appointmentId);
+        if (appToUpdate) {
+          const updatedApp = { ...appToUpdate, hasSgaCrtCall: true, updatedAt: now };
+          if (supabase) await supabase.from('appointments').upsert(updatedApp);
+          setAppointments(prev => [updatedApp, ...prev.filter(a => a.id !== updatedApp.id)]);
+        }
+      }
+
+      // 2. If editing and appointmentId changed, check OLD linked appointment
+      if (oldTicket && oldTicket.appointmentId && oldTicket.appointmentId !== ticketToSave.appointmentId) {
+        const hasOtherTickets = updatedTickets.some(t => t.appointmentId === oldTicket.appointmentId);
+        if (!hasOtherTickets) {
+          const oldApp = appointments.find(a => a.id === oldTicket.appointmentId);
+          if (oldApp) {
+            const updatedOldApp = { ...oldApp, hasSgaCrtCall: false, updatedAt: now };
+            if (supabase) await supabase.from('appointments').upsert(updatedOldApp);
+            setAppointments(prev => [updatedOldApp, ...prev.filter(a => a.id !== updatedOldApp.id)]);
           }
         }
       }
+
       setIsTicketFormOpen(false);
       resetTicketForm();
     } catch (error) {
@@ -558,14 +574,35 @@ export default function App() {
     setEditingTicketId(null);
   };
 
-  const deleteTicket = async (id: string) => {
-    if (!confirm('Tem certeza que deseja excluir este chamado?')) return;
+  const deleteTicket = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    const ticketToDelete = tickets.find(t => t.id === id);
+    if (!window.confirm('Tem certeza que deseja excluir este chamado?')) return;
+    
     try {
       if (supabase) {
         const { error } = await supabase.from('tickets').delete().eq('id', id);
         if (error) throw error;
       }
-      setTickets(prev => prev.filter(t => t.id !== id));
+      
+      const remainingTickets = tickets.filter(t => t.id !== id);
+      setTickets(remainingTickets);
+      
+      // If it was linked to an appointment, check if we should reset the flag
+      if (ticketToDelete?.appointmentId) {
+        const hasOtherTickets = remainingTickets.some(t => t.appointmentId === ticketToDelete.appointmentId);
+        if (!hasOtherTickets) {
+          const appToUpdate = appointments.find(a => a.id === ticketToDelete.appointmentId);
+          if (appToUpdate) {
+            const updatedApp = { ...appToUpdate, hasSgaCrtCall: false, updatedAt: new Date().toISOString() };
+            if (supabase) {
+              await supabase.from('appointments').upsert(updatedApp);
+            }
+            setAppointments(prev => [updatedApp, ...prev.filter(a => a.id !== updatedApp.id)]);
+          }
+        }
+      }
+      
       setNotification({ message: 'Chamado excluído.', type: 'success' });
     } catch (error) {
       console.error('Error deleting ticket:', error);
@@ -970,6 +1007,13 @@ export default function App() {
                                 >
                                   <MessageCircle className="w-3.5 h-3.5" />
                                 </button>
+                                <button 
+                                  onClick={(e) => deleteAppointment(e, app.id)}
+                                  className="p-1.5 rounded-lg bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 transition-all"
+                                  title="Excluir Agendamento"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                                 <div className="flex gap-1">
                                   {app.isConfirmed && (
                                     <span className="bg-blue-100 text-blue-700 text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter">Confirmado</span>
@@ -1092,7 +1136,7 @@ export default function App() {
                                 <TicketIcon className="w-4 h-4" />
                               </button>
                               <button 
-                                onClick={() => deleteAppointment(selectedAppointment.id)}
+                                onClick={(e) => deleteAppointment(e, selectedAppointment.id)}
                                 className="p-2 bg-red-50 text-red-600 rounded-xl hover:bg-red-100 transition-colors"
                                 title="Excluir"
                               >
@@ -1163,7 +1207,7 @@ export default function App() {
                               <StatusBadge label="Psicólogo" isFit={selectedAppointment.isFitPsychologist} />
                               <StatusBadge label="Tela H572C" isFit={selectedAppointment.isFitH572C} />
                               <StatusBadge label="Tela CP02A" isFit={selectedAppointment.isFitCP02A} />
-                              {selectedAppointment.examType === 'Rua' && (
+                              {selectedAppointment.examType === 'Prova de Rua' && (
                                 <StatusBadge label="Legislação" isFit={selectedAppointment.isFitLegislation} />
                               )}
                             </div>
@@ -1330,7 +1374,7 @@ export default function App() {
                               <FileText className="w-4 h-4" />
                             </button>
                             <button 
-                              onClick={() => deleteTicket(ticket.id)}
+                              onClick={(e) => deleteTicket(e, ticket.id)}
                               className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -1552,7 +1596,7 @@ export default function App() {
                       style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundSize: '1.25rem' }}
                     >
                       <option value="Legislação">Legislação</option>
-                      <option value="Rua">Prova de Rua</option>
+                      <option value="Prova de Rua">Prova de Rua</option>
                     </select>
                   </div>
 
@@ -1632,7 +1676,7 @@ export default function App() {
                     <Checkbox label="Apto no Psicólogo" name="isFitPsychologist" checked={formData.isFitPsychologist} onChange={handleInputChange} />
                     <Checkbox label="Apto na Tela H572C" name="isFitH572C" checked={formData.isFitH572C} onChange={handleInputChange} />
                     <Checkbox label="Apto na Tela CP02A" name="isFitCP02A" checked={formData.isFitCP02A} onChange={handleInputChange} />
-                    {formData.examType === 'Rua' && (
+                    {formData.examType === 'Prova de Rua' && (
                       <Checkbox label="Apto na Prova de Legislação" name="isFitLegislation" checked={formData.isFitLegislation} onChange={handleInputChange} />
                     )}
                   </div>

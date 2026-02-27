@@ -13,7 +13,7 @@ describe('Helpers', () => {
   it('should generate correct subject', () => {
     const app = {
       fullName: 'João Silva',
-      examType: 'Rua',
+      examType: 'Prova de Rua',
       renach: 'BA123456789'
     };
     expect(getSubject(app)).toBe('PROVA DE RUA - BA123456789 JOÃO');

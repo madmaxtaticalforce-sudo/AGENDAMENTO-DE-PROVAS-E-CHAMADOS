@@ -21,7 +21,9 @@ export const maskPhone = (value: string) => {
 
 export const getSubject = (app: any) => {
   const firstName = app.fullName.trim().split(' ')[0].toUpperCase();
-  return `PROVA DE ${app.examType.toUpperCase()} - ${app.renach.toUpperCase()} ${firstName}`;
+  const type = app.examType.toUpperCase();
+  const subjectType = type.startsWith('PROVA DE') ? type : `PROVA DE ${type}`;
+  return `${subjectType} - ${app.renach.toUpperCase()} ${firstName}`;
 };
 
 export const generateRequestText = (app: any) => {
@@ -31,7 +33,7 @@ export const generateRequestText = (app: any) => {
   const formattedDate = date.toLocaleDateString('pt-BR');
 
   return `Prezados,
-Solicito o agendamento de Prova Teórica de ${app.examType} para o candidato abaixo, conforme data previamente alinhada com a Banca Examinadora local.
+Solicito o agendamento de ${app.examType} para o candidato abaixo, conforme data previamente alinhada com a Banca Examinadora local.
 DATA DO AGENDAMENTO: ${formattedDate} (${weekday})
 -----------------------------------------
 **Dados do candidato:**
@@ -49,7 +51,7 @@ CONTATO: ${app.contact}
 - VISTA: ${app.isFitVision ? 'APTO' : 'INAPTO'}
 - PSICÓLOGO: ${app.isFitPsychologist ? 'APTO' : 'INAPTO'}
 - TELA H572C: ${app.isFitH572C ? 'APTO' : 'INAPTO'}
-- TELA CP02A: ${app.isFitCP02A ? 'APTO' : 'INAPTO'}${app.examType === 'Rua' ? `\n- PROVA LEGISLAÇÃO: ${app.isFitLegislation ? 'APTO' : 'INAPTO'}` : ''}`;
+- TELA CP02A: ${app.isFitCP02A ? 'APTO' : 'INAPTO'}${app.examType === 'Prova de Rua' ? `\n- PROVA LEGISLAÇÃO: ${app.isFitLegislation ? 'APTO' : 'INAPTO'}` : ''}`;
 };
 
 export const generateStudentText = (app: any) => {
@@ -58,9 +60,13 @@ export const generateStudentText = (app: any) => {
   const weekday = weekdays[date.getDay()];
   const formattedDate = date.toLocaleDateString('pt-BR');
 
-  return `📢 PROVA DE LEGISLAÇÃO – DETRAN-BA
+  const examName = app.examType.toUpperCase();
+  const isRua = app.examType === 'Prova de Rua';
+  const examDesc = isRua ? 'prova de rua' : 'prova teórica de legislação';
 
-${app.fullName.toUpperCase()}, informamos que sua prova teórica de legislação está agendada para:
+  return `📢 ${examName} – DETRAN-BA
+
+${app.fullName.toUpperCase()}, informamos que sua ${examDesc} está agendada para:
 
 📅 ${formattedDate} (${weekday})
 ⏰ ${app.appointmentTime || '--:--'}

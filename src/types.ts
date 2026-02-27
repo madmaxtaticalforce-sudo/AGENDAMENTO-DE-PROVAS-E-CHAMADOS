@@ -15,7 +15,7 @@ export interface Appointment {
   isFitCP02A: boolean;
   isFitLegislation: boolean;
   hasSgaCrtCall: boolean;
-  examType: 'Legislação' | 'Rua';
+  examType: 'Legislação' | 'Prova de Rua';
   isConfirmed: boolean;
   result?: 'APTO' | 'INAPTO' | null;
   observations?: string;
@@ -23,7 +23,7 @@ export interface Appointment {
   updatedAt: string;
 }
 
-export type ExamType = 'Legislação' | 'Rua';
+export type ExamType = 'Legislação' | 'Prova de Rua';
 
 export type TicketStatus = 'Aberto' | 'Em Andamento' | 'Resolvido';
 export type TicketType = 'SGA' | 'CRT' | 'Outro';
