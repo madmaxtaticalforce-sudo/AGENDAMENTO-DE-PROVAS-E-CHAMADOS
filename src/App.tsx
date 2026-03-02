@@ -383,27 +383,63 @@ export default function App() {
     setIsFormOpen(true);
   };
 
-  const deleteAppointment = async (e: React.MouseEvent, id: string) => {
+  const [isDeleting, setIsDeleting] = useState<string | null>(null);
+
+  const deleteAppointment = async (e: React.MouseEvent, appToDelete: Appointment) => {
     e.stopPropagation();
-    if (window.confirm('Tem certeza que deseja excluir este agendamento?')) {
+    const { id, fullName, renach } = appToDelete;
+    
+    if (window.confirm(`Tem certeza que deseja excluir o agendamento de ${fullName}? Todos os chamados vinculados também serão removidos.`)) {
+      setIsDeleting(id);
       try {
         if (supabase) {
-          const { error } = await supabase
+          // 1. Delete any linked tickets first
+          const { error: ticketError } = await supabase
+            .from('tickets')
+            .delete()
+            .eq('appointmentId', id);
+          
+          if (ticketError) console.error('Error deleting linked tickets:', ticketError);
+
+          // 2. Delete the appointment by ID
+          const { error: idError } = await supabase
             .from('appointments')
             .delete()
             .eq('id', id);
 
-          if (error) throw error;
+          if (idError) {
+            console.warn('Failed to delete by ID, trying by RENACH...', idError);
+            // 3. Fallback: Delete by RENACH if ID fails (e.g. if ID was changed or mismatched)
+            const { error: renachError } = await supabase
+              .from('appointments')
+              .delete()
+              .eq('renach', renach);
+            
+            if (renachError) throw renachError;
+          }
         }
 
-        setAppointments(prev => prev.filter(app => app.id !== id));
-        setNotification({ message: 'Agendamento excluído com sucesso.', type: 'success' });
+        // Update local state
+        setAppointments(prev => prev.filter(a => a.id !== id && a.renach !== renach));
+        setTickets(prev => prev.filter(t => t.appointmentId !== id));
+        
+        setNotification({ message: `Candidato(a) ${fullName} excluído(a) com sucesso.`, type: 'success' });
+        if (selectedAppointment?.id === id || selectedAppointment?.renach === renach) {
+          setSelectedAppointment(null);
+        }
+      } catch (error: any) {
+        console.error('Error deleting candidate:', error);
+        setNotification({ 
+          message: `Erro ao excluir no banco: ${error.message || 'Erro desconhecido'}. Removendo da visualização atual.`, 
+          type: 'error' 
+        });
+        
+        // Force local removal anyway
+        setAppointments(prev => prev.filter(a => a.id !== id && a.renach !== renach));
+        setTickets(prev => prev.filter(t => t.appointmentId !== id));
         if (selectedAppointment?.id === id) setSelectedAppointment(null);
-      } catch (error) {
-        console.error('Error deleting from Supabase:', error);
-        setNotification({ message: 'Erro ao excluir no banco de dados. Removendo localmente...', type: 'error' });
-        setAppointments(prev => prev.filter(app => app.id !== id));
-        if (selectedAppointment?.id === id) setSelectedAppointment(null);
+      } finally {
+        setIsDeleting(null);
       }
     }
   };
@@ -1008,11 +1044,20 @@ export default function App() {
                                   <MessageCircle className="w-3.5 h-3.5" />
                                 </button>
                                 <button 
-                                  onClick={(e) => deleteAppointment(e, app.id)}
-                                  className="p-1.5 rounded-lg bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 transition-all"
+                                  onClick={(e) => deleteAppointment(e, app)}
+                                  disabled={isDeleting === app.id}
+                                  className={`p-1.5 rounded-lg border transition-all ${
+                                    isDeleting === app.id 
+                                      ? 'bg-slate-50 text-slate-400 border-slate-100 cursor-not-allowed' 
+                                      : 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100'
+                                  }`}
                                   title="Excluir Agendamento"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
+                                  {isDeleting === app.id ? (
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  )}
                                 </button>
                                 <div className="flex gap-1">
                                   {app.isConfirmed && (
@@ -1136,11 +1181,20 @@ export default function App() {
                                 <TicketIcon className="w-4 h-4" />
                               </button>
                               <button 
-                                onClick={(e) => deleteAppointment(e, selectedAppointment.id)}
-                                className="p-2 bg-red-50 text-red-600 rounded-xl hover:bg-red-100 transition-colors"
+                                onClick={(e) => deleteAppointment(e, selectedAppointment)}
+                                disabled={isDeleting === selectedAppointment.id}
+                                className={`p-2 rounded-xl transition-colors ${
+                                  isDeleting === selectedAppointment.id
+                                    ? 'bg-slate-50 text-slate-400 cursor-not-allowed'
+                                    : 'bg-red-50 text-red-600 hover:bg-red-100'
+                                }`}
                                 title="Excluir"
                               >
-                                <Trash2 className="w-4 h-4" />
+                                {isDeleting === selectedAppointment.id ? (
+                                  <RefreshCw className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <Trash2 className="w-4 h-4" />
+                                )}
                               </button>
                             </div>
                           </div>
