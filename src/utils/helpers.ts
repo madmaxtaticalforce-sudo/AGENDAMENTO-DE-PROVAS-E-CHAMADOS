@@ -19,6 +19,25 @@ export const maskPhone = (value: string) => {
     .replace(/(-\d{4})\d+?$/, '$1');
 };
 
+export const validateCPF = (cpf: string) => {
+  const clean = cpf.replace(/\D/g, '');
+  return clean.length === 11;
+};
+
+export const validateRenach = (renach: string) => {
+  // RENACH is usually 9 or 11 digits, but can vary. 
+  // Basic check for at least 9 characters.
+  return renach.trim().length >= 9;
+};
+
+export const normalizeString = (str: string) => {
+  return str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // Remove accents
+    .replace(/[^\w\s]/gi, ''); // Remove special characters
+};
+
 export const getSubject = (app: any) => {
   const firstName = app.fullName.trim().split(' ')[0].toUpperCase();
   const type = app.examType.toUpperCase();
@@ -60,9 +79,17 @@ export const generateStudentText = (app: any) => {
   const weekday = weekdays[date.getDay()];
   const formattedDate = date.toLocaleDateString('pt-BR');
 
-  const examName = app.examType.toUpperCase();
   const isRua = app.examType === 'Prova de Rua';
+  const examName = isRua ? 'PROVA DE RUA' : app.examType.toUpperCase();
   const examDesc = isRua ? 'prova de rua' : 'prova teórica de legislação';
+
+  let location = app.location;
+  if (isRua) {
+    location = location.replace('CIR STO DE JESUS', '11 CIR STO DE JESUS');
+  }
+
+  const cityInfo = isRua ? '\n🏙️ CIDADE: STO DE JESUS-BA' : '';
+  const footerLocal = isRua ? 'SHOPPING ITAGUARI' : 'RODOVIARIA DE NAZARÉ-BA';
 
   return `📢 ${examName} – DETRAN-BA
 
@@ -70,7 +97,7 @@ ${app.fullName.toUpperCase()}, informamos que sua ${examDesc} está agendada par
 
 📅 ${formattedDate} (${weekday})
 ⏰ ${app.appointmentTime || '--:--'}
-📍 ${app.location}
+📍 ${location}${cityInfo}
 
 Dados do candidato:
 • CPF: ${app.cpf}
@@ -80,6 +107,6 @@ Dados do candidato:
 
 ➡️ Comparecer com 30 minutos de antecedência, portando documento oficial com foto.
 
-${app.location} | DETRAN-BA
-LOCAL: RODOVIARIA DE NAZARÉ-BA`;
+${location} | DETRAN-BA
+LOCAL: ${footerLocal}`;
 };

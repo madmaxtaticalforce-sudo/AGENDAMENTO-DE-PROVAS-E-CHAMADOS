@@ -37,6 +37,8 @@ export const supabase = getSupabase();
  *   "isFitCP02A" boolean default false,
  *   "isFitLegislation" boolean default false,
  *   "isConfirmed" boolean default false,
+ *   "isRequestSent" boolean default false,
+ *   "result" text,
  *   observations text,
  *   "appointmentTime" text,
  *   "serviceType" text,
@@ -52,6 +54,7 @@ export const supabase = getSupabase();
  *   "appointmentId" uuid references appointments(id),
  *   "studentName" text not null,
  *   "studentCpf" text not null,
+ *   "studentRenach" text not null,
  *   type text not null,
  *   status text not null,
  *   description text not null,
@@ -60,11 +63,14 @@ export const supabase = getSupabase();
  *   "updatedAt" timestamp with time zone default now()
  * );
  * 
- * -- Se a tabela já existir, rode apenas este comando:
+ * -- Se a tabela já existir, rode estes comandos para atualizar as colunas:
  * alter table appointments add column if not exists "hasSgaCrtCall" boolean default false;
+ * alter table appointments add column if not exists "isRequestSent" boolean default false;
  * alter table appointments add column if not exists "result" text;
  * alter table appointments add column if not exists "updatedAt" timestamp with time zone default now();
  * 
  * alter table appointments enable row level security;
+ * alter table tickets enable row level security;
  * create policy "Public Access" on appointments for all using (true) with check (true);
+ * create policy "Public Access" on tickets for all using (true) with check (true);
  */

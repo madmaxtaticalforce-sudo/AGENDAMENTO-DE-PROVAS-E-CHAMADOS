@@ -28,14 +28,16 @@ import {
   Upload,
   CalendarRange,
   Database,
-  RefreshCw
+  RefreshCw,
+  Send
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Appointment, ExamType, Ticket, TicketStatus, TicketType } from './types';
 import { supabase } from './lib/supabase';
 import { Ticket as TicketIcon, AlertCircle, Clock, CheckCircle2 } from 'lucide-react';
-import { maskCPF, maskPhone, getSubject, generateRequestText, generateStudentText } from './utils/helpers';
+import { maskCPF, maskPhone, getSubject, generateRequestText, generateStudentText, validateCPF, validateRenach, normalizeString } from './utils/helpers';
 import { FormLabel, Checkbox, DetailItem, StatusBadge, StatCard } from './components/UIComponents';
+import { HomeView } from './components/HomeView';
 
 // Helper for masks
 // Removed local helpers, using src/utils/helpers.ts
@@ -50,21 +52,25 @@ export default function App() {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isAgendaOpen, setIsAgendaOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeFilter, setActiveFilter] = useState<'all' | 'confirmed' | 'expired' | 'sga_crt'>('all');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'confirmed' | 'unconfirmed' | 'expired' | 'sga_crt'>('all');
   const [sortBy, setSortBy] = useState<'recent' | 'alphabetical'>('recent');
-  const [currentView, setCurrentView] = useState<'appointments' | 'tickets'>('appointments');
+  const [currentView, setCurrentView] = useState<'home' | 'appointments' | 'tickets'>('home');
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [isTicketFormOpen, setIsTicketFormOpen] = useState(false);
   const [editingTicketId, setEditingTicketId] = useState<string | null>(null);
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' | 'warning' | 'info' } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [dbStatus, setDbStatus] = useState<'connected' | 'disconnected' | 'error'>('disconnected');
 
   const todayStr = useMemo(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const now = new Date();
+    // Use local date parts to avoid UTC shift issues
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }, []);
 
   // Form State
@@ -82,6 +88,7 @@ export default function App() {
     isFitLegislation: false,
     hasSgaCrtCall: false,
     isConfirmed: false,
+    isRequestSent: false,
     result: null as 'APTO' | 'INAPTO' | null,
     observations: '',
     appointmentTime: '',
@@ -93,6 +100,7 @@ export default function App() {
   const [ticketFormData, setTicketFormData] = useState({
     studentName: '',
     studentCpf: '',
+    studentRenach: '',
     type: 'SGA' as TicketType,
     status: 'Aberto' as TicketStatus,
     description: '',
@@ -100,23 +108,134 @@ export default function App() {
     appointmentId: ''
   });
 
-  const fetchTickets = async () => {
+  const fetchTickets = async (silent = false) => {
     if (!supabase) return;
+    if (!silent) setIsLoading(true);
     try {
       const { data, error } = await supabase
         .from('tickets')
         .select('*')
         .order('createdAt', { ascending: false });
 
-      if (error) throw error;
-      if (data) setTickets(data);
-    } catch (error) {
+      if (error) {
+        // Handle missing table error gracefully
+        if (error.code === 'PGRST205') {
+          console.warn('Tabela "tickets" não encontrada no Supabase. Os chamados SGA/CRT funcionarão apenas localmente até que a tabela seja criada.');
+          return;
+        }
+        throw error;
+      }
+      
+      const saved = localStorage.getItem('detran_tickets');
+      const localTickets: Ticket[] = saved ? JSON.parse(saved) : [];
+
+      if (data && data.length > 0) {
+        // Merge: remote data wins on conflict (by ID), but keep local-only items
+        const remoteIds = new Set(data.map(t => t.id));
+        const localOnly = localTickets.filter(t => !remoteIds.has(t.id));
+        
+        // Sync local-only items to Supabase
+        if (localOnly.length > 0) {
+          console.log(`Syncing ${localOnly.length} local-only tickets to Supabase...`);
+          try {
+            const { error: syncError } = await supabase.from('tickets').upsert(localOnly);
+            if (syncError) console.error('Error syncing local tickets to Supabase:', syncError);
+          } catch (e) {
+            console.error('Exception syncing local tickets:', e);
+          }
+        }
+
+        const merged = [...data, ...localOnly].sort((a, b) => 
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        );
+        setTickets(merged);
+      } else if (localTickets.length > 0) {
+        // No tickets in Supabase, push local ones
+        console.log(`Pushing all ${localTickets.length} local tickets to empty Supabase...`);
+        try {
+          const { error: syncError } = await supabase.from('tickets').upsert(localTickets);
+          if (syncError) console.error('Error pushing local tickets to Supabase:', syncError);
+        } catch (e) {
+          console.error('Exception pushing local tickets:', e);
+        }
+        setTickets(localTickets);
+      }
+    } catch (error: any) {
       console.error('Error fetching tickets:', error);
+      if (error instanceof TypeError && (error.message === 'Failed to fetch' || error.message === 'Falha ao buscar')) {
+        console.warn('Erro de rede ao buscar chamados. Verifique sua conexão ou se algum bloqueador de anúncios está impedindo o acesso ao Supabase.');
+      }
     }
   };
 
-  const fetchData = async () => {
-    setIsLoading(true);
+  const cleanupDuplicates = async (data: Appointment[]) => {
+    if (!data || data.length === 0) return data;
+    
+    const seen = new Map<string, Appointment>();
+    const toDelete: string[] = [];
+    const unique: Appointment[] = [];
+
+    // Sort by updatedAt descending so we keep the most recent one
+    const sorted = [...data].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+
+    for (const app of sorted) {
+      // Key: Name + CPF + RENACH + ExamType (normalized)
+      // We use a combination to be sure it's the same person
+      const nameKey = app.fullName.trim().toLowerCase();
+      const cpfKey = app.cpf.trim();
+      const renachKey = app.renach.trim().toUpperCase();
+      const examKey = app.examType;
+      
+      // Check if any of the identifying fields (if not empty) already exist for this exam type
+      let isDuplicate = false;
+      
+      // We'll use a more complex check: if any record with same (Name OR CPF OR RENACH) AND same ExamType exists
+      // But for simplicity in a Map, we'll just check if we've seen this person+exam before
+      // We'll use multiple keys to track
+      const personKey = `${nameKey}|${cpfKey}|${renachKey}|${examKey}`;
+      
+      // Check if any existing unique record has same CPF or RENACH for same exam
+      // We don't use Name alone as it can have homonyms
+      if (seen.has(personKey)) {
+        isDuplicate = true;
+      } else {
+        const existingDuplicate = unique.find(u => 
+          u.examType === examKey && 
+          (
+            (u.cpf.trim() === cpfKey && cpfKey !== '' && cpfKey !== '000.000.000-00') || 
+            (u.renach.trim().toUpperCase() === renachKey && renachKey !== '' && renachKey !== 'BA000000000')
+          )
+        );
+        if (existingDuplicate) isDuplicate = true;
+      }
+
+      if (isDuplicate) {
+        toDelete.push(app.id);
+      } else {
+        seen.set(personKey, app);
+        unique.push(app);
+      }
+    }
+
+    if (toDelete.length > 0) {
+      console.log(`Cleaning up ${toDelete.length} duplicates...`);
+      if (supabase) {
+        try {
+          // Delete from Supabase
+          const { error } = await supabase.from('appointments').delete().in('id', toDelete);
+          if (error) console.error('Error deleting duplicates from Supabase:', error);
+        } catch (e) {
+          console.error('Exception deleting duplicates:', e);
+        }
+      }
+      setAppointments(unique);
+      setNotification({ message: `${toDelete.length} registros duplicados foram removidos automaticamente para manter a integridade do sistema.`, type: 'info' });
+    }
+    return unique;
+  };
+
+  const fetchData = async (silent = false) => {
+    if (!silent) setIsLoading(true);
     try {
       if (!supabase) {
         setDbStatus('disconnected');
@@ -137,11 +256,40 @@ export default function App() {
       if (error) throw error;
 
       setDbStatus('connected');
+      
+      const saved = localStorage.getItem('detran_appointments');
+      const localData: Appointment[] = saved ? JSON.parse(saved) : [];
+      
       if (data && data.length > 0) {
-        setAppointments(data);
-      } else {
-        const saved = localStorage.getItem('detran_appointments');
-        if (saved) setAppointments(JSON.parse(saved));
+        // Merge: remote data wins on conflict (by ID), but keep local-only items
+        const remoteIds = new Set(data.map(a => a.id));
+        const localOnly = localData.filter(a => !remoteIds.has(a.id));
+        
+        // Sync local-only items to Supabase if they are new
+        if (localOnly.length > 0) {
+          console.log(`Syncing ${localOnly.length} local-only items to Supabase...`);
+          try {
+            const { error: syncError } = await supabase.from('appointments').upsert(localOnly);
+            if (syncError) console.error('Error syncing local items to Supabase:', syncError);
+          } catch (e) {
+            console.error('Exception syncing local items:', e);
+          }
+        }
+
+        const merged = [...data, ...localOnly].sort((a, b) => 
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        );
+        await cleanupDuplicates(merged);
+      } else if (localData.length > 0) {
+        // No data in Supabase, but we have local data - push it all
+        console.log(`Pushing all ${localData.length} local items to empty Supabase...`);
+        try {
+          const { error: syncError } = await supabase.from('appointments').upsert(localData);
+          if (syncError) console.error('Error pushing local items to Supabase:', syncError);
+        } catch (e) {
+          console.error('Exception pushing local items:', e);
+        }
+        await cleanupDuplicates(localData);
       }
 
       // Also fetch tickets
@@ -151,7 +299,10 @@ export default function App() {
       setDbStatus('error');
       
       let errorMsg = 'Erro ao conectar com Supabase.';
-      if (error?.message?.includes('relation "appointments" does not exist')) {
+      
+      if (error instanceof TypeError && (error.message === 'Failed to fetch' || error.message === 'Falha ao buscar')) {
+        errorMsg = 'Falha na conexão com o banco de dados. Verifique sua internet ou desative bloqueadores de anúncios (AdBlock) que podem estar impedindo o acesso ao Supabase.';
+      } else if (error?.message?.includes('relation "appointments" does not exist')) {
         errorMsg = 'Tabela "appointments" não encontrada no Supabase.';
       } else if (error?.message?.includes('column "result" of relation "appointments" does not exist')) {
         errorMsg = 'Coluna "result" faltando na tabela "appointments". Verifique o SQL no arquivo supabase.ts.';
@@ -169,12 +320,48 @@ export default function App() {
   // Load from Supabase or localStorage
   useEffect(() => {
     fetchData();
+    
+    // Refresh on window focus
+    const handleFocus = () => {
+      console.log('Window focused, refreshing data...');
+      fetchData(true);
+    };
+    window.addEventListener('focus', handleFocus);
+    
+    // Set up Realtime subscriptions
+    if (supabase) {
+      const appointmentsChannel = supabase
+        .channel('appointments-realtime')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => {
+          console.log('Realtime update: appointments');
+          fetchData(true); // Silent refetch
+        })
+        .subscribe();
+
+      const ticketsChannel = supabase
+        .channel('tickets-realtime')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'tickets' }, () => {
+          console.log('Realtime update: tickets');
+          fetchTickets(true); // Silent refetch
+        })
+        .subscribe();
+
+      return () => {
+        window.removeEventListener('focus', handleFocus);
+        supabase.removeChannel(appointmentsChannel);
+        supabase.removeChannel(ticketsChannel);
+      };
+    }
   }, []);
 
   // Save to localStorage as backup
   useEffect(() => {
     localStorage.setItem('detran_appointments', JSON.stringify(appointments));
   }, [appointments]);
+
+  useEffect(() => {
+    localStorage.setItem('detran_tickets', JSON.stringify(tickets));
+  }, [tickets]);
 
   useEffect(() => {
     if (notification) {
@@ -198,9 +385,10 @@ export default function App() {
   const stats = useMemo(() => {
     const total = appointments.length;
     const confirmados = appointments.filter(app => app.isConfirmed).length;
+    const naoConfirmados = appointments.filter(app => !app.isConfirmed).length;
     const vencidos = appointments.filter(app => app.appointmentDate < todayStr && !app.isConfirmed).length;
     const sgaCrt = appointments.filter(app => app.hasSgaCrtCall).length;
-    return { total, confirmados, vencidos, sgaCrt };
+    return { total, confirmados, naoConfirmados, vencidos, sgaCrt };
   }, [appointments, todayStr]);
 
   const unconfirmedToday = useMemo(() => {
@@ -222,16 +410,19 @@ export default function App() {
   }, [appointments]);
 
   const filteredAppointments = useMemo(() => {
+    const normalizedSearch = normalizeString(searchTerm);
+    
     return appointments.filter(app => {
       // Search filter
-      const matchesSearch = app.fullName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        app.cpf.includes(searchTerm) ||
-        app.renach.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesSearch = normalizeString(app.fullName).includes(normalizedSearch) ||
+        app.cpf.replace(/\D/g, '').includes(normalizedSearch) ||
+        normalizeString(app.renach).includes(normalizedSearch);
       
       if (!matchesSearch) return false;
 
       // Category filter
       if (activeFilter === 'confirmed') return app.isConfirmed;
+      if (activeFilter === 'unconfirmed') return !app.isConfirmed;
       if (activeFilter === 'expired') {
         return app.appointmentDate < todayStr && !app.isConfirmed;
       }
@@ -246,6 +437,17 @@ export default function App() {
     });
   }, [appointments, searchTerm, activeFilter, todayStr, sortBy]);
 
+  const filteredTickets = useMemo(() => {
+    const normalizedSearch = normalizeString(searchTerm);
+    
+    return tickets.filter(ticket => {
+      return normalizeString(ticket.studentName).includes(normalizedSearch) ||
+        ticket.studentCpf.replace(/\D/g, '').includes(normalizedSearch) ||
+        normalizeString(ticket.studentRenach).includes(normalizedSearch) ||
+        normalizeString(ticket.description).includes(normalizedSearch);
+    });
+  }, [tickets, searchTerm]);
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = e.target;
     if (type === 'checkbox') {
@@ -259,7 +461,7 @@ export default function App() {
     }
   };
 
-  const sendEmail = (app: Appointment) => {
+  const sendEmail = async (app: Appointment) => {
     const detranEmail = 'agendamento.crt@detran.ba.gov.br';
     const subject = encodeURIComponent(getSubject(app));
     const body = encodeURIComponent(generateRequestText(app));
@@ -267,20 +469,58 @@ export default function App() {
     // Outlook Web Deep Link
     const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?to=${detranEmail}&subject=${subject}&body=${body}`;
     window.open(outlookUrl, '_blank');
+
+    // Mark as request sent
+    if (!app.isRequestSent) {
+      const now = new Date().toISOString();
+      const updatedApp = { ...app, isRequestSent: true, updatedAt: now };
+      
+      // Update local state
+      setAppointments(prev => prev.map(a => a.id === app.id ? updatedApp : a));
+      if (selectedAppointment?.id === app.id) setSelectedAppointment(updatedApp);
+      
+      // Sync to Supabase
+      if (supabase) {
+        try {
+          const { error } = await supabase.from('appointments').upsert(updatedApp);
+          if (error) throw error;
+        } catch (e) {
+          console.error('Error syncing request sent status:', e);
+        }
+      }
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Check for duplicate CPF or RENACH for the same exam type
+    if (!validateCPF(formData.cpf)) {
+      setNotification({ message: 'CPF inválido. Deve conter 11 dígitos.', type: 'error' });
+      return;
+    }
+
+    if (!validateRenach(formData.renach)) {
+      setNotification({ message: 'RENACH inválido. Verifique o número informado.', type: 'error' });
+      return;
+    }
+
+    // Check for duplicate Name, CPF or RENACH for the same exam type
     const duplicate = appointments.find(app => 
-      (app.cpf === formData.cpf || app.renach === formData.renach) && 
+      (
+        (app.cpf.trim() === formData.cpf.trim() && formData.cpf.trim() !== '') || 
+        (app.renach.trim().toUpperCase() === formData.renach.trim().toUpperCase() && formData.renach.trim() !== '') ||
+        (app.fullName.trim().toLowerCase() === formData.fullName.trim().toLowerCase() && formData.fullName.trim() !== '')
+      ) && 
       app.examType === formData.examType && 
       app.id !== editingId
     );
 
     if (duplicate) {
-      const field = duplicate.cpf === formData.cpf ? 'CPF' : 'RENACH';
+      let field = 'registro';
+      if (duplicate.cpf.trim() === formData.cpf.trim()) field = 'CPF';
+      else if (duplicate.renach.trim().toUpperCase() === formData.renach.trim().toUpperCase()) field = 'RENACH';
+      else if (duplicate.fullName.trim().toLowerCase() === formData.fullName.trim().toLowerCase()) field = 'Nome';
+
       setNotification({
         message: `Este ${field} já possui um agendamento de ${formData.examType} para ${duplicate.fullName}.`,
         type: 'error'
@@ -289,39 +529,80 @@ export default function App() {
     }
     
     const now = new Date().toISOString();
+    let supabaseError = null;
+    
+    // Generate a robust ID
+    const generateId = () => {
+      try {
+        return crypto.randomUUID();
+      } catch (e) {
+        return Date.now().toString(36) + Math.random().toString(36).substring(2);
+      }
+    };
+
     const appointmentToSave: Appointment = {
       ...formData,
-      id: editingId || crypto.randomUUID(),
+      fullName: formData.fullName.trim(),
+      cpf: formData.cpf.trim(),
+      renach: formData.renach.trim().toUpperCase(),
+      location: formData.location.trim(),
+      contact: formData.contact.trim(),
+      id: editingId || generateId(),
       createdAt: editingId ? (appointments.find(a => a.id === editingId)?.createdAt || now) : now,
       updatedAt: now
     };
 
     try {
       if (supabase) {
+        // Clean data to avoid sending undefined values which Supabase might reject
+        const cleanData = Object.fromEntries(
+          Object.entries(appointmentToSave).filter(([_, v]) => v !== undefined)
+        );
+
         const { error } = await supabase
           .from('appointments')
-          .upsert(appointmentToSave);
+          .upsert(cleanData);
 
-        if (error) throw error;
+        if (error) {
+          console.error('Supabase upsert error:', error);
+          supabaseError = error;
+        }
+      }
+
+      // Always update local state regardless of Supabase success (Optimistic/Fallback)
+      let finalMsg = 'Agendamento cadastrado com sucesso!';
+      let finalType: 'success' | 'warning' = 'success';
+      
+      if (supabaseError) {
+        finalMsg = `Aviso: Salvo apenas localmente. Erro no banco: ${supabaseError.message}`;
+        finalType = 'warning';
       }
 
       if (editingId) {
         setAppointments(prev => [appointmentToSave, ...prev.filter(app => app.id !== editingId)]);
-        setNotification({ message: 'Agendamento atualizado com sucesso!', type: 'success' });
+        setNotification({ 
+          message: editingId ? 'Agendamento atualizado com sucesso!' : finalMsg, 
+          type: editingId ? 'success' : finalType 
+        });
         if (selectedAppointment?.id === editingId) {
           setSelectedAppointment(appointmentToSave);
         }
         setEditingId(null);
       } else {
         setAppointments(prev => [appointmentToSave, ...prev]);
-        setNotification({ message: 'Agendamento cadastrado com sucesso!', type: 'success' });
+        setNotification({ message: finalMsg, type: finalType });
       }
+      
       setIsFormOpen(false);
       resetForm();
-    } catch (error) {
-      console.error('Error saving to Supabase:', error);
-      setNotification({ message: 'Erro ao salvar no banco de dados. Salvando localmente...', type: 'error' });
-      // Fallback local update
+    } catch (error: any) {
+      console.error('Critical error in handleSubmit:', error);
+      setNotification({ 
+        message: `Erro crítico ao salvar: ${error.message || 'Erro desconhecido'}. Tentando salvar localmente...`, 
+        type: 'error' 
+      });
+      
+      // Final fallback to local state
       if (editingId) {
         setAppointments(prev => [appointmentToSave, ...prev.filter(app => app.id !== editingId)]);
       } else {
@@ -347,6 +628,7 @@ export default function App() {
       isFitLegislation: false,
       hasSgaCrtCall: false,
       isConfirmed: false,
+      isRequestSent: false,
       result: null,
       observations: '',
       appointmentTime: '',
@@ -372,6 +654,7 @@ export default function App() {
       isFitLegislation: app.isFitLegislation || false,
       hasSgaCrtCall: app.hasSgaCrtCall || false,
       isConfirmed: app.isConfirmed || false,
+      isRequestSent: app.isRequestSent || false,
       result: app.result || null,
       observations: app.observations || '',
       appointmentTime: app.appointmentTime || '',
@@ -385,61 +668,65 @@ export default function App() {
 
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
 
-  const deleteAppointment = async (e: React.MouseEvent, appToDelete: Appointment) => {
+  const deleteAppointment = async (e: React.MouseEvent, appToDelete: Appointment | null) => {
     e.stopPropagation();
-    const { id, fullName, renach } = appToDelete;
+    if (!appToDelete) return;
+    const { id, fullName } = appToDelete;
     
-    if (window.confirm(`Tem certeza que deseja excluir o agendamento de ${fullName}? Todos os chamados vinculados também serão removidos.`)) {
-      setIsDeleting(id);
+    if (!window.confirm(`Tem certeza que deseja excluir o agendamento de ${fullName}? Todos os dados vinculados serão removidos.`)) {
+      return;
+    }
+
+    setNotification({ message: `Excluindo ${fullName}...`, type: 'info' });
+    setIsDeleting(id);
+
+    try {
+      // 1. Local removal first for instant UI response
+      setAppointments(prev => prev.filter(a => a.id !== id));
+      setTickets(prev => prev.filter(t => t.appointmentId !== id));
+      if (selectedAppointment?.id === id) {
+        setSelectedAppointment(null);
+      }
+
+      if (supabase) {
+        // 2. Delete linked tickets first (to avoid foreign key constraint errors)
+        const { error: tError } = await supabase.from('tickets').delete().eq('appointmentId', id);
+        if (tError) console.warn('Erro ao limpar tickets:', tError);
+
+        // 3. Delete the appointment
+        const { error: aError } = await supabase.from('appointments').delete().eq('id', id);
+        if (aError) throw aError;
+      }
+
+      setNotification({ message: `Candidato(a) ${fullName} excluído(a) com sucesso.`, type: 'success' });
+    } catch (error: any) {
+      console.error('Error deleting candidate:', error);
+      setNotification({ 
+        message: `Erro ao excluir: ${error.message || 'Verifique sua conexão.'}`, 
+        type: 'error' 
+      });
+    } finally {
+      setIsDeleting(null);
+    }
+  };
+
+  const toggleRequestSent = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    const app = appointments.find(a => a.id === id);
+    if (!app) return;
+
+    const updatedApp = { ...app, isRequestSent: !app.isRequestSent, updatedAt: new Date().toISOString() };
+    
+    // Optimistic update
+    setAppointments(prev => prev.map(a => a.id === id ? updatedApp : a));
+    if (selectedAppointment?.id === id) setSelectedAppointment(updatedApp);
+
+    if (supabase) {
       try {
-        if (supabase) {
-          // 1. Delete any linked tickets first
-          const { error: ticketError } = await supabase
-            .from('tickets')
-            .delete()
-            .eq('appointmentId', id);
-          
-          if (ticketError) console.error('Error deleting linked tickets:', ticketError);
-
-          // 2. Delete the appointment by ID
-          const { error: idError } = await supabase
-            .from('appointments')
-            .delete()
-            .eq('id', id);
-
-          if (idError) {
-            console.warn('Failed to delete by ID, trying by RENACH...', idError);
-            // 3. Fallback: Delete by RENACH if ID fails (e.g. if ID was changed or mismatched)
-            const { error: renachError } = await supabase
-              .from('appointments')
-              .delete()
-              .eq('renach', renach);
-            
-            if (renachError) throw renachError;
-          }
-        }
-
-        // Update local state
-        setAppointments(prev => prev.filter(a => a.id !== id && a.renach !== renach));
-        setTickets(prev => prev.filter(t => t.appointmentId !== id));
-        
-        setNotification({ message: `Candidato(a) ${fullName} excluído(a) com sucesso.`, type: 'success' });
-        if (selectedAppointment?.id === id || selectedAppointment?.renach === renach) {
-          setSelectedAppointment(null);
-        }
-      } catch (error: any) {
-        console.error('Error deleting candidate:', error);
-        setNotification({ 
-          message: `Erro ao excluir no banco: ${error.message || 'Erro desconhecido'}. Removendo da visualização atual.`, 
-          type: 'error' 
-        });
-        
-        // Force local removal anyway
-        setAppointments(prev => prev.filter(a => a.id !== id && a.renach !== renach));
-        setTickets(prev => prev.filter(t => t.appointmentId !== id));
-        if (selectedAppointment?.id === id) setSelectedAppointment(null);
-      } finally {
-        setIsDeleting(null);
+        const { error } = await supabase.from('appointments').upsert(updatedApp);
+        if (error) throw error;
+      } catch (err) {
+        console.error('Error updating request status:', err);
       }
     }
   };
@@ -529,15 +816,42 @@ export default function App() {
 
   const handleTicketSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (!validateCPF(ticketFormData.studentCpf)) {
+      setNotification({ message: 'CPF do aluno inválido. Deve conter 11 dígitos.', type: 'error' });
+      return;
+    }
+
+    if (!validateRenach(ticketFormData.studentRenach)) {
+      setNotification({ message: 'RENACH do aluno inválido. Verifique o número informado.', type: 'error' });
+      return;
+    }
+
+    // Generate a robust ID
+    const generateId = () => {
+      try {
+        return crypto.randomUUID();
+      } catch (e) {
+        return Date.now().toString(36) + Math.random().toString(36).substring(2);
+      }
+    };
+
+    // Create the ticket object
     const ticketToSave: Ticket = editingTicketId 
       ? { 
           ...tickets.find(t => t.id === editingTicketId)!,
           ...ticketFormData,
+          studentName: ticketFormData.studentName.trim(),
+          studentCpf: ticketFormData.studentCpf.trim(),
+          studentRenach: ticketFormData.studentRenach.trim().toUpperCase(),
           updatedAt: new Date().toISOString()
         }
       : { 
           ...ticketFormData,
-          id: crypto.randomUUID(),
+          studentName: ticketFormData.studentName.trim(),
+          studentCpf: ticketFormData.studentCpf.trim(),
+          studentRenach: ticketFormData.studentRenach.trim().toUpperCase(),
+          id: generateId(),
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
@@ -546,10 +860,26 @@ export default function App() {
       const oldTicket = editingTicketId ? tickets.find(t => t.id === editingTicketId) : null;
       
       if (supabase) {
+        // Clean data: convert empty appointmentId string to null for Postgres UUID compatibility
+        const dataToSupabase = {
+          ...ticketToSave,
+          appointmentId: ticketToSave.appointmentId === '' ? null : ticketToSave.appointmentId
+        };
+
         const { error } = await supabase
           .from('tickets')
-          .upsert(ticketToSave);
-        if (error) throw error;
+          .upsert(dataToSupabase);
+
+        if (error) {
+          if (error.code === 'PGRST205') {
+            setNotification({ 
+              message: 'Atenção: Tabela "tickets" não encontrada no Supabase. O chamado foi salvo apenas localmente.', 
+              type: 'warning' 
+            });
+          } else {
+            throw error;
+          }
+        }
       }
 
       let updatedTickets: Ticket[];
@@ -591,9 +921,22 @@ export default function App() {
 
       setIsTicketFormOpen(false);
       resetTicketForm();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error saving ticket:', error);
-      setNotification({ message: 'Erro ao salvar chamado.', type: 'error' });
+      const errorDetail = error.message || error.code || 'Erro de conexão';
+      setNotification({ 
+        message: `Erro ao salvar chamado no banco: ${errorDetail}. O chamado foi mantido localmente.`, 
+        type: 'error' 
+      });
+      
+      // Fallback local update even on error
+      if (editingTicketId) {
+        setTickets(prev => prev.map(t => t.id === editingTicketId ? ticketToSave : t));
+      } else {
+        setTickets(prev => [ticketToSave, ...prev]);
+      }
+      setIsTicketFormOpen(false);
+      resetTicketForm();
     }
   };
 
@@ -601,6 +944,7 @@ export default function App() {
     setTicketFormData({
       studentName: '',
       studentCpf: '',
+      studentRenach: '',
       type: 'SGA',
       status: 'Aberto',
       description: '',
@@ -618,7 +962,13 @@ export default function App() {
     try {
       if (supabase) {
         const { error } = await supabase.from('tickets').delete().eq('id', id);
-        if (error) throw error;
+        if (error) {
+          if (error.code === 'PGRST205') {
+            console.warn('Tabela "tickets" não encontrada. Removendo apenas localmente.');
+          } else {
+            throw error;
+          }
+        }
       }
       
       const remainingTickets = tickets.filter(t => t.id !== id);
@@ -650,6 +1000,7 @@ export default function App() {
     setTicketFormData({
       studentName: app.fullName,
       studentCpf: app.cpf,
+      studentRenach: app.renach,
       type: 'SGA',
       status: 'Aberto',
       description: '',
@@ -744,9 +1095,16 @@ export default function App() {
               <div className={`px-6 py-3 rounded-2xl shadow-2xl border flex items-center gap-3 backdrop-blur-md ${
                 notification.type === 'error' 
                   ? 'bg-red-50 border-red-100 text-red-700' 
+                  : notification.type === 'warning'
+                  ? 'bg-orange-50 border-orange-100 text-orange-700'
+                  : notification.type === 'info'
+                  ? 'bg-blue-50 border-blue-100 text-blue-700'
                   : 'bg-emerald-50 border-emerald-100 text-emerald-700'
               }`}>
-                {notification.type === 'error' ? <XCircle className="w-5 h-5" /> : <CheckCircle2 className="w-5 h-5" />}
+                {notification.type === 'error' ? <XCircle className="w-5 h-5" /> : 
+                 notification.type === 'warning' ? <AlertCircle className="w-5 h-5" /> :
+                 notification.type === 'info' ? <Clock className="w-5 h-5" /> :
+                 <CheckCircle2 className="w-5 h-5" />}
                 <span className="text-sm font-bold">{notification.message}</span>
               </div>
             </motion.div>
@@ -762,19 +1120,39 @@ export default function App() {
               <div className="flex items-center gap-1.5">
                 <div className="flex items-center gap-1 px-1 py-0.5 rounded-full bg-slate-50 border border-slate-100">
                   <div className={`w-1 h-1 sm:w-1.5 sm:h-1.5 rounded-full ${
-                    dbStatus === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 
+                    dbStatus === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse' : 
                     dbStatus === 'error' ? 'bg-red-500' : 'bg-slate-300'
                   }`} />
                   <span className="text-[7px] sm:text-[8px] font-black text-slate-400 uppercase tracking-tighter">
-                    {dbStatus === 'connected' ? 'Supabase OK' : 
+                    {dbStatus === 'connected' ? 'Realtime ON' : 
                      dbStatus === 'error' ? 'Erro DB' : 'Offline'}
                   </span>
+                  {dbStatus === 'error' && (
+                    <button 
+                      onClick={() => fetchData()}
+                      className="ml-1 p-0.5 hover:bg-slate-200 rounded transition-colors"
+                      title="Tentar novamente"
+                    >
+                      <RefreshCw className="w-2 h-2 text-slate-400" />
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
           </div>
 
           <nav className="hidden md:flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
+            <button 
+              onClick={() => setCurrentView('home')}
+              className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${
+                currentView === 'home' 
+                  ? 'bg-white text-indigo-600 shadow-sm' 
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <Home className="w-3.5 h-3.5" />
+              Início
+            </button>
             <button 
               onClick={() => setCurrentView('appointments')}
               className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${
@@ -851,14 +1229,6 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <button 
-              onClick={() => { resetForm(); setIsFormOpen(true); }}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white p-2 sm:px-5 sm:py-2.5 rounded-lg sm:rounded-2xl text-xs sm:text-sm font-bold flex items-center gap-1.5 sm:gap-2 transition-all shadow-lg shadow-indigo-100 active:scale-95"
-            >
-              <Plus className="w-3.5 h-3.5 sm:w-4 h-4" />
-              <span className="hidden xs:inline">Novo</span>
-              <span className="hidden sm:inline">Agendamento</span>
-            </button>
           </div>
         </div>
       </header>
@@ -878,11 +1248,39 @@ export default function App() {
         </div>
       )}
 
-      <main className="max-w-7xl mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {currentView === 'appointments' ? (
+      <main className="max-w-7xl mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 pb-24 md:pb-6 items-start">
+        {currentView === 'home' ? (
+          <HomeView 
+            appointments={appointments} 
+            tickets={tickets} 
+            onNavigate={setCurrentView} 
+            onSync={fetchData}
+            isLoading={isLoading}
+          />
+        ) : currentView === 'appointments' ? (
           <>
+            {/* Appointments Header */}
+            <div className="col-span-1 lg:col-span-12 flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-2">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">Gestão de Agendamentos</h2>
+                <p className="text-sm text-slate-500">Acompanhe e organize as solicitações de exames.</p>
+              </div>
+              <motion.button 
+                whileHover={{ scale: 1.05, x: 5 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => {
+                  resetForm();
+                  setIsFormOpen(true);
+                }}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-indigo-100"
+              >
+                <Plus className="w-5 h-5" />
+                Novo Agendamento
+              </motion.button>
+            </div>
+
             {/* Stats Section */}
-            <div className="col-span-1 lg:col-span-12 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-2">
+            <div className="col-span-1 lg:col-span-12 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-2">
               <StatCard 
                 label="Total" 
                 value={stats.total} 
@@ -900,9 +1298,17 @@ export default function App() {
                 onClick={() => setActiveFilter('confirmed')}
               />
               <StatCard 
+                label="Não Confirmados" 
+                value={stats.naoConfirmados} 
+                icon={<XCircle className="w-4 h-4" />} 
+                color="red" 
+                isActive={activeFilter === 'unconfirmed'}
+                onClick={() => setActiveFilter('unconfirmed')}
+              />
+              <StatCard 
                 label="Data Vencida" 
                 value={stats.vencidos} 
-                icon={<XCircle className="w-4 h-4" />} 
+                icon={<CalendarRange className="w-4 h-4" />} 
                 color="amber" 
                 isActive={activeFilter === 'expired'}
                 onClick={() => setActiveFilter('expired')}
@@ -911,7 +1317,7 @@ export default function App() {
                 label="Chamados SGA/CRT" 
                 value={stats.sgaCrt} 
                 icon={<Database className="w-4 h-4" />} 
-                color="red" 
+                color="emerald" 
                 isActive={activeFilter === 'sga_crt'}
                 onClick={() => setActiveFilter('sga_crt')}
               />
@@ -1078,6 +1484,17 @@ export default function App() {
                                 </span>
                               </div>
                               <button 
+                                onClick={(e) => toggleRequestSent(e, app.id)}
+                                className={`p-1.5 rounded-lg transition-all border ${
+                                  app.isRequestSent 
+                                    ? 'bg-amber-500 border-amber-500 text-white shadow-sm' 
+                                    : 'bg-white border-slate-200 text-slate-400 hover:border-amber-500 hover:text-amber-500'
+                                }`}
+                                title={app.isRequestSent ? "Pedido já enviado" : "Marcar como Pedido Enviado"}
+                              >
+                                <Send className="w-3.5 h-3.5" />
+                              </button>
+                              <button 
                                 onClick={(e) => toggleConfirmation(e, app.id)}
                                 className={`p-1.5 rounded-lg transition-all border ${
                                   app.isConfirmed 
@@ -1135,31 +1552,22 @@ export default function App() {
 
             {/* Details Section */}
             <div className="lg:col-span-5">
-              <div className="lg:sticky lg:top-24 space-y-6">
+              <div className="lg:sticky lg:top-20 space-y-6">
                 <AnimatePresence mode="wait">
                   {selectedAppointment ? (
-                    <>
-                      {/* Mobile Overlay */}
-                      <motion.div 
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        onClick={() => setSelectedAppointment(null)}
-                        className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-40 lg:hidden"
-                      />
-                      
-                      <motion.div
-                        key={selectedAppointment.id}
-                        initial={{ opacity: 0, x: 20, y: 20 }}
-                        animate={{ opacity: 1, x: 0, y: 0 }}
-                        exit={{ opacity: 0, x: 20, y: 20 }}
-                        className="fixed inset-x-4 bottom-4 top-20 z-50 lg:relative lg:inset-auto lg:z-0 bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-2xl lg:shadow-xl flex flex-col"
-                      >
-                        <div className="p-6 border-b border-slate-100 bg-slate-50/50 shrink-0">
+                    <motion.div
+                      key={selectedAppointment.id}
+                      initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                      transition={{ type: "spring", damping: 25, stiffness: 200 }}
+                      className="fixed inset-x-4 bottom-4 top-20 z-50 lg:relative lg:inset-auto lg:z-0 bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-2xl lg:shadow-xl flex flex-col"
+                    >
+                        <div className="p-6 border-b border-slate-100 bg-white shrink-0">
                           <div className="flex justify-between items-start mb-6">
                             <button 
                               onClick={() => setSelectedAppointment(null)}
-                              className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-xl border border-transparent hover:border-slate-200 transition-all shadow-sm bg-slate-100"
+                              className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-xl border border-slate-100 transition-all shadow-sm"
                               title="Voltar"
                             >
                               <X className="w-4 h-4 lg:hidden" />
@@ -1167,15 +1575,39 @@ export default function App() {
                             </button>
                             <div className="flex gap-2">
                               <button 
+                                onClick={(e) => toggleRequestSent(e, selectedAppointment.id)}
+                                className={`p-2 rounded-xl transition-all border flex items-center gap-2 font-bold text-[10px] uppercase tracking-widest active:scale-95 ${
+                                  selectedAppointment.isRequestSent 
+                                    ? 'bg-amber-500 border-amber-500 text-white shadow-lg shadow-amber-100' 
+                                    : 'bg-white border-slate-200 text-slate-400 hover:border-amber-500 hover:text-amber-500'
+                                }`}
+                                title={selectedAppointment.isRequestSent ? "Pedido já enviado" : "Marcar como Pedido Enviado"}
+                              >
+                                <Send className="w-4 h-4" />
+                                <span className="hidden sm:inline">{selectedAppointment.isRequestSent ? "Pedido Enviado" : "Enviar Pedido"}</span>
+                              </button>
+                              <button 
+                                onClick={(e) => toggleConfirmation(e, selectedAppointment.id)}
+                                className={`p-2 rounded-xl transition-all border flex items-center gap-2 font-bold text-[10px] uppercase tracking-widest active:scale-95 ${
+                                  selectedAppointment.isConfirmed 
+                                    ? 'bg-blue-600 border-blue-600 text-white shadow-lg shadow-blue-100' 
+                                    : 'bg-white border-slate-200 text-slate-400 hover:border-blue-500 hover:text-blue-500'
+                                }`}
+                                title={selectedAppointment.isConfirmed ? "Desmarcar Confirmação" : "Confirmar Agendamento"}
+                              >
+                                <Check className="w-4 h-4" />
+                                <span className="hidden sm:inline">{selectedAppointment.isConfirmed ? "Confirmado" : "Confirmar"}</span>
+                              </button>
+                              <button 
                                 onClick={() => handleEdit(selectedAppointment)}
-                                className="p-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition-colors"
+                                className="p-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition-colors border border-indigo-100 active:scale-95"
                                 title="Editar"
                               >
                                 <FileText className="w-4 h-4" />
                               </button>
                               <button 
                                 onClick={() => openTicketForStudent(selectedAppointment)}
-                                className="p-2 bg-red-50 text-red-600 rounded-xl hover:bg-red-100 transition-colors"
+                                className="p-2 bg-red-50 text-red-600 rounded-xl hover:bg-red-100 transition-colors border border-red-100 active:scale-95"
                                 title="Abrir Chamado SGA/CRT"
                               >
                                 <TicketIcon className="w-4 h-4" />
@@ -1183,10 +1615,10 @@ export default function App() {
                               <button 
                                 onClick={(e) => deleteAppointment(e, selectedAppointment)}
                                 disabled={isDeleting === selectedAppointment.id}
-                                className={`p-2 rounded-xl transition-colors ${
+                                className={`p-2 rounded-xl transition-colors border active:scale-95 ${
                                   isDeleting === selectedAppointment.id
-                                    ? 'bg-slate-50 text-slate-400 cursor-not-allowed'
-                                    : 'bg-red-50 text-red-600 hover:bg-red-100'
+                                    ? 'bg-slate-50 text-slate-400 border-slate-100 cursor-not-allowed'
+                                    : 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100'
                                 }`}
                                 title="Excluir"
                               >
@@ -1325,7 +1757,6 @@ export default function App() {
                           </div>
                         </div>
                       </motion.div>
-                    </>
                   ) : (
                     <div className="bg-white rounded-3xl border border-dashed border-slate-300 p-12 text-center shadow-sm hidden lg:block">
                       <div className="bg-indigo-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">
@@ -1341,44 +1772,69 @@ export default function App() {
           </>
         ) : (
           <div className="col-span-1 lg:col-span-12 space-y-6">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-2xl font-bold text-slate-900">Central de Chamados</h2>
                 <p className="text-sm text-slate-500">Controle de pendências SGA e CRT.</p>
               </div>
-              <button 
+              <motion.button 
+                whileHover={{ scale: 1.05, x: 5 }}
+                whileTap={{ scale: 0.95 }}
                 onClick={() => {
                   resetTicketForm();
                   setIsTicketFormOpen(true);
                 }}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-indigo-100 active:scale-95"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-indigo-100"
               >
                 <Plus className="w-5 h-5" />
                 Novo Chamado
-              </button>
+              </motion.button>
+            </div>
+
+            {/* Mobile Search for Tickets */}
+            <div className="lg:hidden">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
+                <input 
+                  type="text" 
+                  placeholder="Buscar chamados..." 
+                  className="w-full pl-10 pr-10 py-3 bg-white border border-slate-200 rounded-2xl text-sm outline-none shadow-sm"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+                {searchTerm && (
+                  <button 
+                    onClick={() => setSearchTerm('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-indigo-600 transition-colors p-1 hover:bg-slate-100 rounded-full"
+                    title="Limpar busca"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Ticket Statistics */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="bg-white p-4 rounded-3xl border border-slate-100 shadow-sm">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total</p>
-                <p className="text-2xl font-bold text-slate-900">{tickets.length}</p>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+              <div className="bg-white p-3 sm:p-4 rounded-2xl sm:rounded-3xl border border-slate-100 shadow-sm">
+                <p className="text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total</p>
+                <p className="text-xl sm:text-2xl font-bold text-slate-900">{tickets.length}</p>
               </div>
-              <div className="bg-white p-4 rounded-3xl border border-slate-100 shadow-sm">
-                <p className="text-[10px] font-black text-red-400 uppercase tracking-widest mb-1">Abertos</p>
-                <p className="text-2xl font-bold text-red-600">{tickets.filter(t => t.status === 'Aberto').length}</p>
+              <div className="bg-white p-3 sm:p-4 rounded-2xl sm:rounded-3xl border border-slate-100 shadow-sm">
+                <p className="text-[8px] sm:text-[10px] font-black text-red-400 uppercase tracking-widest mb-1">Abertos</p>
+                <p className="text-xl sm:text-2xl font-bold text-red-600">{tickets.filter(t => t.status === 'Aberto').length}</p>
               </div>
-              <div className="bg-white p-4 rounded-3xl border border-slate-100 shadow-sm">
-                <p className="text-[10px] font-black text-amber-400 uppercase tracking-widest mb-1">Em Andamento</p>
-                <p className="text-2xl font-bold text-amber-600">{tickets.filter(t => t.status === 'Em Andamento').length}</p>
+              <div className="bg-white p-3 sm:p-4 rounded-2xl sm:rounded-3xl border border-slate-100 shadow-sm">
+                <p className="text-[8px] sm:text-[10px] font-black text-amber-400 uppercase tracking-widest mb-1">Andamento</p>
+                <p className="text-xl sm:text-2xl font-bold text-amber-600">{tickets.filter(t => t.status === 'Em Andamento').length}</p>
               </div>
-              <div className="bg-white p-4 rounded-3xl border border-slate-100 shadow-sm">
-                <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-1">Resolvidos</p>
-                <p className="text-2xl font-bold text-emerald-600">{tickets.filter(t => t.status === 'Resolvido').length}</p>
+              <div className="bg-white p-3 sm:p-4 rounded-2xl sm:rounded-3xl border border-slate-100 shadow-sm">
+                <p className="text-[8px] sm:text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-1">Resolvidos</p>
+                <p className="text-xl sm:text-2xl font-bold text-emerald-600">{tickets.filter(t => t.status === 'Resolvido').length}</p>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {(['Aberto', 'Em Andamento', 'Resolvido'] as TicketStatus[]).map((status) => (
                 <div key={status} className="space-y-4">
                   <div className="flex items-center justify-between px-2">
@@ -1388,20 +1844,21 @@ export default function App() {
                       }`} />
                       {status}
                       <span className="ml-2 bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full text-[10px]">
-                        {tickets.filter(t => t.status === status).length}
+                        {filteredTickets.filter(t => t.status === status).length}
                       </span>
                     </h3>
                   </div>
 
                   <div className="space-y-3 min-h-[200px]">
-                    {tickets.filter(t => t.status === status).map((ticket) => (
-                      <motion.div
-                        key={ticket.id}
-                        layout
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition-all group"
-                      >
+                    {filteredTickets.filter(t => t.status === status).length > 0 ? (
+                      filteredTickets.filter(t => t.status === status).map((ticket) => (
+                        <motion.div
+                          key={ticket.id}
+                          layout
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition-all group"
+                        >
                         <div className="flex justify-between items-start mb-3">
                           <span className={`text-[9px] font-black uppercase px-2 py-1 rounded-lg ${
                             ticket.type === 'SGA' ? 'bg-red-100 text-red-700' : ticket.type === 'CRT' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-700'
@@ -1414,6 +1871,7 @@ export default function App() {
                                 setTicketFormData({
                                   studentName: ticket.studentName,
                                   studentCpf: ticket.studentCpf,
+                                  studentRenach: ticket.studentRenach || '',
                                   type: ticket.type,
                                   status: ticket.status,
                                   description: ticket.description,
@@ -1436,7 +1894,10 @@ export default function App() {
                           </div>
                         </div>
                         <h4 className="font-bold text-slate-900 group-hover:text-indigo-600 transition-colors">{ticket.studentName}</h4>
-                        <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-0.5">{ticket.studentCpf}</p>
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
+                          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">CPF: {ticket.studentCpf}</p>
+                          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">RENACH: {ticket.studentRenach}</p>
+                        </div>
                         
                         <div className="mt-4 p-3 bg-slate-50 rounded-2xl border border-slate-100">
                           <p className="text-xs text-slate-600 leading-relaxed italic">
@@ -1490,15 +1951,15 @@ export default function App() {
                           </select>
                         </div>
                       </motion.div>
-                    ))}
-                    {tickets.filter(t => t.status === status).length === 0 && (
-                      <div className="border-2 border-dashed border-slate-100 rounded-[2.5rem] py-12 text-center">
-                        <div className="bg-slate-50 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
-                          <AlertCircle className="w-6 h-6 text-slate-200" />
-                        </div>
-                        <p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Sem chamados</p>
+                    ))
+                  ) : (
+                    <div className="border-2 border-dashed border-slate-100 rounded-[2.5rem] py-12 text-center">
+                      <div className="bg-slate-50 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
+                        <AlertCircle className="w-6 h-6 text-slate-200" />
                       </div>
-                    )}
+                      <p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Sem chamados</p>
+                    </div>
+                  )}
                   </div>
                 </div>
               ))}
@@ -1769,55 +2230,87 @@ export default function App() {
               className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" 
             />
             <motion.div 
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden"
+              initial={{ opacity: 0, scale: 0.9, y: 40, rotateX: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0, rotateX: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 40, rotateX: 10 }}
+              transition={{ 
+                type: "spring",
+                damping: 25,
+                stiffness: 300,
+                mass: 0.8
+              }}
+              className="relative bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden perspective-1000"
             >
               <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                <div>
+                <motion.div
+                  initial={{ x: -20, opacity: 0 }}
+                  animate={{ x: 0, opacity: 1 }}
+                  transition={{ delay: 0.1 }}
+                >
                   <h2 className="text-2xl font-bold text-slate-900">
                     {editingTicketId ? 'Editar Chamado' : 'Abrir Novo Chamado'}
                   </h2>
                   <p className="text-xs text-slate-500 font-medium mt-1">Registre pendências SGA ou CRT para acompanhamento.</p>
-                </div>
+                </motion.div>
                 <button 
                   onClick={() => setIsTicketFormOpen(false)} 
-                  className="p-2 text-slate-400 hover:text-slate-600 hover:bg-white rounded-xl transition-all"
+                  className="p-2 text-slate-400 hover:text-slate-600 hover:bg-white rounded-xl transition-all active:scale-90"
                 >
                   <X className="w-6 h-6" />
                 </button>
               </div>
 
               <form onSubmit={handleTicketSubmit} className="p-8 space-y-6">
-                <div className="space-y-4">
-                  <div>
-                    <FormLabel label="Nome do Aluno" />
-                    <input 
-                      required
-                      value={ticketFormData.studentName}
-                      onChange={(e) => setTicketFormData(prev => ({ ...prev, studentName: e.target.value }))}
-                      className="form-input"
-                      placeholder="Nome completo"
-                    />
-                  </div>
-                  <div>
-                    <FormLabel label="CPF" />
-                    <input 
-                      required
-                      value={ticketFormData.studentCpf}
-                      onChange={(e) => setTicketFormData(prev => ({ ...prev, studentCpf: maskCPF(e.target.value) }))}
-                      className="form-input"
-                      placeholder="000.000.000-00"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
+                <motion.div 
+                  className="space-y-4"
+                  initial="hidden"
+                  animate="visible"
+                  variants={{
+                    hidden: { opacity: 0 },
+                    visible: {
+                      opacity: 1,
+                      transition: {
+                        staggerChildren: 0.05
+                      }
+                    }
+                  }}
+                >
+                  {[
+                    { label: "Nome do Aluno", value: ticketFormData.studentName, onChange: (v: string) => setTicketFormData(prev => ({ ...prev, studentName: v })), placeholder: "Nome completo", required: true },
+                    { label: "CPF", value: ticketFormData.studentCpf, onChange: (v: string) => setTicketFormData(prev => ({ ...prev, studentCpf: maskCPF(v) })), placeholder: "000.000.000-00", required: true },
+                    { label: "RENACH", value: ticketFormData.studentRenach, onChange: (v: string) => setTicketFormData(prev => ({ ...prev, studentRenach: v.toUpperCase() })), placeholder: "BA000000000", required: true }
+                  ].map((field, i) => (
+                    <motion.div 
+                      key={field.label}
+                      variants={{
+                        hidden: { y: 10, opacity: 0 },
+                        visible: { y: 0, opacity: 1 }
+                      }}
+                    >
+                      <FormLabel label={field.label} />
+                      <input 
+                        required={field.required}
+                        value={field.value}
+                        onChange={(e) => field.onChange(e.target.value)}
+                        className="form-input focus:scale-[1.01] transition-transform"
+                        placeholder={field.placeholder}
+                      />
+                    </motion.div>
+                  ))}
+
+                  <motion.div 
+                    className="grid grid-cols-2 gap-4"
+                    variants={{
+                      hidden: { y: 10, opacity: 0 },
+                      visible: { y: 0, opacity: 1 }
+                    }}
+                  >
                     <div>
                       <FormLabel label="Tipo" />
                       <select 
                         value={ticketFormData.type}
                         onChange={(e) => setTicketFormData(prev => ({ ...prev, type: e.target.value as TicketType }))}
-                        className="form-input"
+                        className="form-input focus:scale-[1.02] transition-transform"
                       >
                         <option value="SGA">SGA</option>
                         <option value="CRT">CRT</option>
@@ -1829,42 +2322,59 @@ export default function App() {
                       <select 
                         value={ticketFormData.status}
                         onChange={(e) => setTicketFormData(prev => ({ ...prev, status: e.target.value as TicketStatus }))}
-                        className="form-input"
+                        className="form-input focus:scale-[1.02] transition-transform"
                       >
                         <option value="Aberto">Aberto</option>
                         <option value="Em Andamento">Em Andamento</option>
                         <option value="Resolvido">Resolvido</option>
                       </select>
                     </div>
-                  </div>
-                  <div>
+                  </motion.div>
+
+                  <motion.div
+                    variants={{
+                      hidden: { y: 10, opacity: 0 },
+                      visible: { y: 0, opacity: 1 }
+                    }}
+                  >
                     <FormLabel label="Descrição do Problema" />
                     <textarea 
                       required
                       rows={3}
                       value={ticketFormData.description}
                       onChange={(e) => setTicketFormData(prev => ({ ...prev, description: e.target.value }))}
-                      className="form-input resize-none"
+                      className="form-input resize-none focus:scale-[1.01] transition-transform"
                       placeholder="Descreva detalhadamente o problema..."
                     />
-                  </div>
-                  <div>
+                  </motion.div>
+
+                  <motion.div
+                    variants={{
+                      hidden: { y: 10, opacity: 0 },
+                      visible: { y: 0, opacity: 1 }
+                    }}
+                  >
                     <FormLabel label="Observações Internas" />
                     <textarea 
                       rows={2}
                       value={ticketFormData.observations}
                       onChange={(e) => setTicketFormData(prev => ({ ...prev, observations: e.target.value }))}
-                      className="form-input resize-none"
+                      className="form-input resize-none focus:scale-[1.01] transition-transform"
                       placeholder="Notas adicionais para a equipe..."
                     />
-                  </div>
-                </div>
+                  </motion.div>
+                </motion.div>
 
-                <div className="flex gap-4 pt-4">
+                <motion.div 
+                  className="flex gap-4 pt-4"
+                  initial={{ y: 20, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ delay: 0.3 }}
+                >
                   <button 
                     type="button"
                     onClick={() => setIsTicketFormOpen(false)}
-                    className="flex-1 px-6 py-4 rounded-2xl font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 transition-all"
+                    className="flex-1 px-6 py-4 rounded-2xl font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 transition-all active:scale-95"
                   >
                     Cancelar
                   </button>
@@ -1874,7 +2384,7 @@ export default function App() {
                   >
                     {editingTicketId ? 'Salvar Alterações' : 'Abrir Chamado'}
                   </button>
-                </div>
+                </motion.div>
               </form>
             </motion.div>
           </div>
@@ -1970,6 +2480,47 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Mobile Navigation */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 px-6 py-3 z-40 flex items-center justify-between shadow-[0_-4px_20px_rgba(0,0,0,0.08)] backdrop-blur-lg bg-white/90">
+        <button 
+          onClick={() => setCurrentView('home')}
+          className={`flex flex-col items-center gap-1 transition-all active:scale-90 ${currentView === 'home' ? 'text-indigo-600' : 'text-slate-400'}`}
+        >
+          <Home className="w-5 h-5" />
+          <span className="text-[9px] font-black uppercase tracking-tighter">Início</span>
+        </button>
+        <button 
+          onClick={() => setCurrentView('appointments')}
+          className={`flex flex-col items-center gap-1 transition-all active:scale-90 ${currentView === 'appointments' ? 'text-indigo-600' : 'text-slate-400'}`}
+        >
+          <Calendar className="w-5 h-5" />
+          <span className="text-[9px] font-black uppercase tracking-tighter">Agenda</span>
+        </button>
+        
+        {/* Quick Add Button Mobile */}
+        <button 
+          onClick={() => { resetForm(); setIsFormOpen(true); }}
+          className="bg-indigo-600 text-white p-4 rounded-full -mt-10 shadow-xl shadow-indigo-200 border-4 border-white active:scale-90 transition-all"
+        >
+          <Plus className="w-6 h-6" />
+        </button>
+
+        <button 
+          onClick={() => setCurrentView('tickets')}
+          className={`flex flex-col items-center gap-1 transition-all active:scale-90 ${currentView === 'tickets' ? 'text-indigo-600' : 'text-slate-400'}`}
+        >
+          <TicketIcon className="w-5 h-5" />
+          <span className="text-[9px] font-black uppercase tracking-tighter">Chamados</span>
+        </button>
+        <button 
+          onClick={() => setIsAgendaOpen(true)}
+          className="flex flex-col items-center gap-1 text-slate-400 active:scale-90 transition-all"
+        >
+          <CalendarRange className="w-5 h-5" />
+          <span className="text-[9px] font-black uppercase tracking-tighter">Resumo</span>
+        </button>
+      </div>
 
       <style>{`
         .form-input {

@@ -17,6 +17,7 @@ export interface Appointment {
   hasSgaCrtCall: boolean;
   examType: 'Legislação' | 'Prova de Rua';
   isConfirmed: boolean;
+  isRequestSent?: boolean;
   result?: 'APTO' | 'INAPTO' | null;
   observations?: string;
   createdAt: string;
@@ -33,6 +34,7 @@ export interface Ticket {
   appointmentId?: string; // Linked student
   studentName: string;
   studentCpf: string;
+  studentRenach: string;
   type: TicketType;
   status: TicketStatus;
   description: string;
