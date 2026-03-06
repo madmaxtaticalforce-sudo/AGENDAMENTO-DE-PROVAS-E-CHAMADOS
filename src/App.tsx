@@ -62,7 +62,10 @@ export default function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' | 'warning' | 'info' } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isFetching, setIsFetching] = useState(false);
+  const [isFetchingTickets, setIsFetchingTickets] = useState(false);
   const [dbStatus, setDbStatus] = useState<'connected' | 'disconnected' | 'error'>('disconnected');
+  const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
 
   const todayStr = useMemo(() => {
     const now = new Date();
@@ -110,6 +113,8 @@ export default function App() {
 
   const fetchTickets = async (silent = false) => {
     if (!supabase) return;
+    if (isFetchingTickets) return;
+    setIsFetchingTickets(true);
     if (!silent) setIsLoading(true);
     try {
       const { data, error } = await supabase
@@ -165,6 +170,9 @@ export default function App() {
       if (error instanceof TypeError && (error.message === 'Failed to fetch' || error.message === 'Falha ao buscar')) {
         console.warn('Erro de rede ao buscar chamados. Verifique sua conexão ou se algum bloqueador de anúncios está impedindo o acesso ao Supabase.');
       }
+    } finally {
+      setIsFetchingTickets(false);
+      if (!silent) setIsLoading(false);
     }
   };
 
@@ -235,6 +243,8 @@ export default function App() {
   };
 
   const fetchData = async (silent = false) => {
+    if (isFetching) return;
+    setIsFetching(true);
     if (!silent) setIsLoading(true);
     try {
       if (!supabase) {
@@ -293,7 +303,8 @@ export default function App() {
       }
 
       // Also fetch tickets
-      await fetchTickets();
+      await fetchTickets(silent);
+      setLastSyncTime(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } catch (error: any) {
       console.error('Error fetching from Supabase:', error);
       setDbStatus('error');
@@ -313,6 +324,7 @@ export default function App() {
       const saved = localStorage.getItem('detran_appointments');
       if (saved) setAppointments(JSON.parse(saved));
     } finally {
+      setIsFetching(false);
       setIsLoading(false);
     }
   };
@@ -336,7 +348,12 @@ export default function App() {
           console.log('Realtime update: appointments');
           fetchData(true); // Silent refetch
         })
-        .subscribe();
+        .subscribe((status) => {
+          console.log(`Realtime status (appointments): ${status}`);
+          if (status === 'CHANNEL_ERROR') {
+            console.error('Realtime connection error for appointments. Check if Realtime is enabled for this table in Supabase dashboard.');
+          }
+        });
 
       const ticketsChannel = supabase
         .channel('tickets-realtime')
@@ -344,7 +361,12 @@ export default function App() {
           console.log('Realtime update: tickets');
           fetchTickets(true); // Silent refetch
         })
-        .subscribe();
+        .subscribe((status) => {
+          console.log(`Realtime status (tickets): ${status}`);
+          if (status === 'CHANNEL_ERROR') {
+            console.error('Realtime connection error for tickets. Check if Realtime is enabled for this table in Supabase dashboard.');
+          }
+        });
 
       return () => {
         window.removeEventListener('focus', handleFocus);
@@ -1254,8 +1276,9 @@ export default function App() {
             appointments={appointments} 
             tickets={tickets} 
             onNavigate={setCurrentView} 
-            onSync={fetchData}
+            onSync={() => fetchData()}
             isLoading={isLoading}
+            lastSyncTime={lastSyncTime}
           />
         ) : currentView === 'appointments' ? (
           <>

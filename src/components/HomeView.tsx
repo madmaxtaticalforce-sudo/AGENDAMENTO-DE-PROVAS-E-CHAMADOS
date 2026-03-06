@@ -39,11 +39,12 @@ interface HomeViewProps {
   onNavigate: (view: 'appointments' | 'tickets') => void;
   onSync: () => void;
   isLoading: boolean;
+  lastSyncTime: string | null;
 }
 
 const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#6366f1'];
 
-export const HomeView: React.FC<HomeViewProps> = ({ appointments, tickets, onNavigate, onSync, isLoading }) => {
+export const HomeView: React.FC<HomeViewProps> = ({ appointments, tickets, onNavigate, onSync, isLoading, lastSyncTime }) => {
   const stats = useMemo(() => {
     const total = appointments.length;
     const confirmed = appointments.filter(a => a.isConfirmed).length;
@@ -116,8 +117,9 @@ export const HomeView: React.FC<HomeViewProps> = ({ appointments, tickets, onNav
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
           </button>
-          <div className="px-4 py-2 bg-slate-50 text-slate-600 rounded-xl text-xs font-black uppercase tracking-widest border border-slate-100">
-            {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' })}
+          <div className="px-4 py-2 bg-slate-50 text-slate-600 rounded-xl text-xs font-black uppercase tracking-widest border border-slate-100 flex flex-col items-center">
+            <span>{new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' })}</span>
+            {lastSyncTime && <span className="text-[9px] text-indigo-500 mt-0.5">Sincronizado às {lastSyncTime}</span>}
           </div>
         </motion.div>
       </div>
