@@ -1040,7 +1040,14 @@ export default function App() {
 
   const exportData = () => {
     try {
-      const dataStr = JSON.stringify(appointments, null, 2);
+      const backupData = {
+        appointments,
+        tickets,
+        version: '1.0',
+        exportDate: new Date().toISOString()
+      };
+      
+      const dataStr = JSON.stringify(backupData, null, 2);
       const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
       
       const exportFileDefaultName = `backup_detran_${new Date().toISOString().split('T')[0]}.json`;
@@ -1064,33 +1071,73 @@ export default function App() {
     reader.onload = async (event) => {
       try {
         const json = JSON.parse(event.target?.result as string);
-        if (Array.isArray(json)) {
-          // Basic validation: check if items have required fields
-          const isValid = json.every(item => item.id && item.fullName && item.cpf);
-          if (isValid) {
-            const now = new Date().toISOString();
-            const sanitizedData = json.map(item => ({
-              ...item,
-              createdAt: item.createdAt || now,
-              updatedAt: item.updatedAt || now
-            }));
+        
+        let importedAppointments: Appointment[] = [];
+        let importedTickets: Ticket[] = [];
 
-            // Try to sync all to Supabase
-            if (supabase) {
-              const { error } = await supabase
-                .from('appointments')
-                .upsert(sanitizedData);
-
-              if (error) throw error;
-            }
-
-            setAppointments(sanitizedData);
-            setNotification({ message: 'Dados importados e sincronizados com sucesso!', type: 'success' });
-          } else {
-            throw new Error('Formato de arquivo inválido.');
+        // Handle new format with both appointments and tickets
+        if (json.version && json.appointments) {
+          importedAppointments = json.appointments;
+          if (json.tickets) {
+            importedTickets = json.tickets;
           }
+        } 
+        // Handle old format (just an array of appointments)
+        else if (Array.isArray(json)) {
+          importedAppointments = json;
         } else {
-          throw new Error('O arquivo deve conter uma lista de agendamentos.');
+          throw new Error('Formato de arquivo inválido.');
+        }
+
+        const isValidAppointments = importedAppointments.every(item => item.id && item.fullName && item.cpf);
+        const isValidTickets = importedTickets.every(item => item.id && item.studentName && item.studentCpf);
+
+        if (isValidAppointments && isValidTickets) {
+          const now = new Date().toISOString();
+          const sanitizedAppointments = importedAppointments.map(item => ({
+            ...item,
+            createdAt: item.createdAt || now,
+            updatedAt: item.updatedAt || now
+          }));
+          
+          const sanitizedTickets = importedTickets.map(item => ({
+            ...item,
+            createdAt: item.createdAt || now,
+            updatedAt: item.updatedAt || now
+          }));
+
+          // Try to sync all to Supabase
+          if (supabase) {
+            if (sanitizedAppointments.length > 0) {
+              const { error: appError } = await supabase
+                .from('appointments')
+                .upsert(sanitizedAppointments);
+              if (appError) throw appError;
+            }
+            
+            if (sanitizedTickets.length > 0) {
+              const { error: ticketError } = await supabase
+                .from('tickets')
+                .upsert(sanitizedTickets);
+              if (ticketError) throw ticketError;
+            }
+          }
+
+          // Merge with existing data or replace? Let's replace to be a true restore, 
+          // but maybe we should merge. Let's merge to avoid data loss.
+          // Actually, since it's a backup, usually it restores the state.
+          // Let's just set the state to the imported data to avoid duplicates, 
+          // or we can rely on Supabase to merge them and then fetch.
+          // Let's fetch from Supabase after a successful import to ensure consistency.
+          
+          setAppointments(sanitizedAppointments);
+          setTickets(sanitizedTickets);
+          setNotification({ message: 'Dados importados e sincronizados com sucesso!', type: 'success' });
+          
+          // Fetch from DB to ensure everything is perfectly synced
+          fetchData(true);
+        } else {
+          throw new Error('Formato de arquivo inválido.');
         }
       } catch (error) {
         console.error('Error importing/syncing data:', error);
