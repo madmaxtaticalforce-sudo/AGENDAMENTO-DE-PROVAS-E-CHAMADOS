@@ -29,7 +29,8 @@ import {
   CalendarRange,
   Database,
   RefreshCw,
-  Send
+  Send,
+  HelpCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Appointment, ExamType, Ticket, TicketStatus, TicketType } from './types';
@@ -77,6 +78,7 @@ export default function App() {
   }, []);
 
   // Form State
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [formData, setFormData] = useState({
     fullName: '',
     cpf: '',
@@ -1151,6 +1153,96 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-[#1E293B] font-sans">
+      {/* Help Modal */}
+      <AnimatePresence>
+        {isHelpOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsHelpOpen(false)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden border border-slate-100"
+            >
+              <div className="p-8">
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-indigo-600 p-2 rounded-xl text-white">
+                      <HelpCircle className="w-5 h-5" />
+                    </div>
+                    <h2 className="text-2xl font-black text-slate-900 tracking-tight">Ajuda e Configuração</h2>
+                  </div>
+                  <button 
+                    onClick={() => setIsHelpOpen(false)}
+                    className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+                  >
+                    <X className="w-5 h-5 text-slate-400" />
+                  </button>
+                </div>
+
+                <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+                  <section>
+                    <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-3 flex items-center gap-2">
+                      <Database className="w-4 h-4 text-indigo-600" /> Sincronização em Nuvem
+                    </h3>
+                    <p className="text-sm text-slate-600 leading-relaxed mb-4">
+                      Este sistema utiliza o <strong>Supabase</strong> para manter seus dados sincronizados entre múltiplos dispositivos. Para configurar:
+                    </p>
+                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-3">
+                      <div className="flex items-start gap-3">
+                        <div className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-[10px] font-black shrink-0 mt-0.5">1</div>
+                        <p className="text-xs text-slate-600">Crie um projeto no <a href="https://supabase.com" target="_blank" rel="noreferrer" className="text-indigo-600 font-bold hover:underline">Supabase</a>.</p>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-[10px] font-black shrink-0 mt-0.5">2</div>
+                        <p className="text-xs text-slate-600">Execute o script SQL contido no arquivo <code>supabase_schema.sql</code> no SQL Editor do Supabase.</p>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-[10px] font-black shrink-0 mt-0.5">3</div>
+                        <p className="text-xs text-slate-600">Configure as variáveis <code>VITE_SUPABASE_URL</code> e <code>VITE_SUPABASE_ANON_KEY</code> nas configurações do projeto.</p>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section>
+                    <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-3 flex items-center gap-2">
+                      <Download className="w-4 h-4 text-indigo-600" /> Backup e Segurança
+                    </h3>
+                    <p className="text-sm text-slate-600 leading-relaxed">
+                      Recomendamos exportar um backup semanalmente. O arquivo gerado contém todos os seus agendamentos e chamados. Em caso de perda de dados, você pode restaurar tudo usando a função de importação.
+                    </p>
+                  </section>
+
+                  <section>
+                    <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-3 flex items-center gap-2">
+                      <MessageCircle className="w-4 h-4 text-indigo-600" /> Comunicação
+                    </h3>
+                    <p className="text-sm text-slate-600 leading-relaxed">
+                      Ao clicar no ícone do WhatsApp em um agendamento, o sistema gera automaticamente uma mensagem personalizada com os dados do exame para o aluno.
+                    </p>
+                  </section>
+                </div>
+
+                <div className="mt-8 pt-6 border-t border-slate-100 flex justify-end">
+                  <button 
+                    onClick={() => setIsHelpOpen(false)}
+                    className="px-8 py-3 bg-slate-900 text-white rounded-2xl font-bold hover:bg-slate-800 transition-all active:scale-95"
+                  >
+                    Entendi
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
         <AnimatePresence>
@@ -1270,6 +1362,13 @@ export default function App() {
 
           <div className="flex items-center gap-1.5 sm:gap-2">
             <div className="flex items-center gap-1 sm:gap-2 mr-0.5 sm:mr-2 sm:border-r border-slate-200 sm:pr-4">
+              <button 
+                onClick={() => setIsHelpOpen(true)}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-600 p-2 rounded-lg sm:rounded-2xl transition-all active:scale-95"
+                title="Ajuda e Configuração"
+              >
+                <HelpCircle className="w-4 h-4 sm:w-5 h-5" />
+              </button>
               <button 
                 onClick={fetchData}
                 className="bg-slate-100 hover:bg-slate-200 text-slate-600 p-2 rounded-lg sm:rounded-2xl transition-all active:scale-95"

@@ -1,0 +1,46 @@
+{
+  "appointments": [
+    {
+      "id": "sample-appointment-1",
+      "fullName": "João da Silva Exemplo",
+      "cpf": "123.456.789-00",
+      "renach": "BA123456789",
+      "appointmentDate": "2026-03-20",
+      "location": "SAC Shopping da Bahia",
+      "contact": "(71) 98888-8888",
+      "isFitVision": true,
+      "isFitPsychologist": true,
+      "isFitH572C": false,
+      "isFitCP02A": false,
+      "isFitLegislation": true,
+      "hasSgaCrtCall": false,
+      "isConfirmed": true,
+      "isRequestSent": true,
+      "result": null,
+      "observations": "Aluno exemplar, documentação em dia.",
+      "appointmentTime": "09:00",
+      "serviceType": "151 – 1ª Habilitação Veicular (2 e 4 rodas)",
+      "category": "AB",
+      "examType": "Legislação",
+      "createdAt": "2026-03-12T14:26:50Z",
+      "updatedAt": "2026-03-12T14:26:50Z"
+    }
+  ],
+  "tickets": [
+    {
+      "id": "sample-ticket-1",
+      "studentName": "João da Silva Exemplo",
+      "studentCpf": "123.456.789-00",
+      "studentRenach": "BA123456789",
+      "type": "SGA",
+      "status": "Aberto",
+      "description": "Erro ao processar biometria no sistema SGA.",
+      "observations": "Aguardando retorno da TI do DETRAN.",
+      "appointmentId": "sample-appointment-1",
+      "createdAt": "2026-03-12T14:26:50Z",
+      "updatedAt": "2026-03-12T14:26:50Z"
+    }
+  ],
+  "version": "1.0",
+  "exportDate": "2026-03-12T14:26:50Z"
+}
