@@ -79,6 +79,7 @@ export default function App() {
 
   // Form State
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [isFirstSync, setIsFirstSync] = useState(false);
   const [formData, setFormData] = useState({
     fullName: '',
     cpf: '',
@@ -244,6 +245,26 @@ export default function App() {
     return unique;
   };
 
+  const saveCloudBackup = async () => {
+    if (!supabase) return;
+    try {
+      const backupData = {
+        appointments,
+        tickets,
+        version: '1.0',
+        exportDate: new Date().toISOString()
+      };
+      
+      const { error } = await supabase.from('backups').insert({ data: backupData });
+      if (error) throw error;
+      
+      setNotification({ message: 'Backup salvo na nuvem com sucesso!', type: 'success' });
+    } catch (error) {
+      console.error('Error saving cloud backup:', error);
+      setNotification({ message: 'Erro ao salvar backup na nuvem.', type: 'error' });
+    }
+  };
+
   const fetchData = async (silent = false) => {
     if (isFetching) return;
     setIsFetching(true);
@@ -273,6 +294,12 @@ export default function App() {
       const localData: Appointment[] = saved ? JSON.parse(saved) : [];
       
       if (data && data.length > 0) {
+        // If local storage is empty, this is likely a new machine
+        if (localData.length === 0) {
+          setIsFirstSync(true);
+          setTimeout(() => setIsFirstSync(false), 3000);
+        }
+
         // Merge: remote data wins on conflict (by ID), but keep local-only items
         const remoteIds = new Set(data.map(a => a.id));
         const localOnly = localData.filter(a => !remoteIds.has(a.id));
@@ -1155,6 +1182,27 @@ export default function App() {
     <div className="min-h-screen bg-[#F8FAFC] text-[#1E293B] font-sans">
       {/* Help Modal */}
       <AnimatePresence>
+        {isFirstSync && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-md"
+          >
+            <div className="bg-white p-8 rounded-[3rem] shadow-2xl text-center space-y-6 max-w-sm mx-4">
+              <div className="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center mx-auto">
+                <RefreshCw className="w-10 h-10 text-indigo-600 animate-spin" />
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-xl font-black text-slate-900">Sincronizando Dados</h3>
+                <p className="text-slate-500 font-medium">Detectamos que este é um novo dispositivo. Estamos baixando seus agendamentos da nuvem...</p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {isHelpOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <motion.div 
@@ -1194,7 +1242,7 @@ export default function App() {
                     <p className="text-sm text-slate-600 leading-relaxed mb-4">
                       Este sistema utiliza o <strong>Supabase</strong> para manter seus dados sincronizados entre múltiplos dispositivos. Para configurar:
                     </p>
-                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-3">
+                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-3 mb-4">
                       <div className="flex items-start gap-3">
                         <div className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-[10px] font-black shrink-0 mt-0.5">1</div>
                         <p className="text-xs text-slate-600">Crie um projeto no <a href="https://supabase.com" target="_blank" rel="noreferrer" className="text-indigo-600 font-bold hover:underline">Supabase</a>.</p>
@@ -1208,6 +1256,12 @@ export default function App() {
                         <p className="text-xs text-slate-600">Configure as variáveis <code>VITE_SUPABASE_URL</code> e <code>VITE_SUPABASE_ANON_KEY</code> nas configurações do projeto.</p>
                       </div>
                     </div>
+                    <button 
+                      onClick={saveCloudBackup}
+                      className="w-full py-3 bg-indigo-50 text-indigo-600 rounded-2xl font-bold border border-indigo-100 hover:bg-indigo-100 transition-all flex items-center justify-center gap-2"
+                    >
+                      <Database className="w-4 h-4" /> Criar Ponto de Restauração na Nuvem
+                    </button>
                   </section>
 
                   <section>

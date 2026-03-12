@@ -50,3 +50,10 @@ CREATE TABLE IF NOT EXISTS tickets (
 CREATE INDEX IF NOT EXISTS idx_appointments_cpf ON appointments(cpf);
 CREATE INDEX IF NOT EXISTS idx_appointments_renach ON appointments(renach);
 CREATE INDEX IF NOT EXISTS idx_tickets_student_cpf ON tickets("studentCpf");
+
+-- 5. Tabela de Backups (snapshots do sistema)
+CREATE TABLE IF NOT EXISTS backups (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    data JSONB NOT NULL,
+    "createdAt" TIMESTAMPTZ DEFAULT now()
+);

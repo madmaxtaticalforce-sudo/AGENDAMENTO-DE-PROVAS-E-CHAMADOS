@@ -52,6 +52,21 @@ O sistema utiliza duas tabelas principais: `appointments` e `tickets`. Certifiqu
 1. **Exportar:** Clique no ícone de download no topo da tela para gerar um arquivo `.json` com todos os agendamentos e chamados atuais.
 2. **Importar:** Clique no ícone de upload e selecione um arquivo de backup válido. O sistema irá mesclar e sincronizar os dados automaticamente.
 
+## 💻 Uso em Múltiplas Máquinas
+
+Este sistema foi projetado para ser acessado de qualquer lugar. Para garantir que seus dados estejam sempre atualizados:
+
+1.  **Sincronização Automática:** Ao abrir o app em um novo computador, ele detectará que a memória local está vazia e baixará automaticamente todos os dados do Supabase.
+2.  **Realtime:** Alterações feitas em um computador aparecem quase instantaneamente em outros computadores abertos.
+3.  **Ponto de Restauração na Nuvem:** Dentro do menu de **Ajuda (❓)**, você pode clicar em "Criar Ponto de Restauração na Nuvem". Isso salva uma cópia de segurança completa de todo o sistema no banco de dados.
+
+## 💾 Backup e Segurança
+
+Existem duas formas de backup:
+
+1.  **Backup Local (Arquivo .json):** Use o botão de **Download (Exportar Backup)** no topo da tela para baixar um arquivo com todos os dados. Você pode levar este arquivo em um pendrive ou salvar no Google Drive.
+2.  **Backup na Nuvem (Supabase):** Os dados são salvos automaticamente no Supabase. Mesmo que você limpe o cache do navegador ou troque de PC, os dados estarão seguros na nuvem.
+
 ---
 
 Desenvolvido para proporcionar agilidade e organização no fluxo de trabalho diário.
